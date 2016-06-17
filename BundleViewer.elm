@@ -8,6 +8,9 @@ import Http
 import Html.Events exposing (..)
 import Json.Decode as Decode exposing (Decoder, (:=))
 import String
+import Graphics.Collage exposing (..)
+import Graphics.Element exposing (..)
+import Color exposing (..)
 
 resourcesUrl = "http://localhost:3008/api/flow_debug/resources"
 
@@ -17,6 +20,9 @@ jobsUrl resourceId =
 flowSegmentsUrl job = 
   ("http://localhost:3008/api/flow_debug/flows/" ++  job.resourceId ++ "/" ++ job.id)
 
+resourceLocationUrl resourceId = 
+  ("http://localhost:3008/api/flow_debug/resourceLocation/" ++ resourceId)
+
 type Action 
   = GetResources
   | ShowResources (Maybe Resources)
@@ -24,6 +30,7 @@ type Action
   | ShowJobsAvailable (Maybe Jobs)
   | GetFlowSegmentsForJob Job
   | ShowFlowSegments (Maybe FlowSegments)
+  | UpdateResourceLocation (Maybe GeoCoord)
 
 type alias Resources = 
   List Resource
@@ -47,8 +54,8 @@ type alias FlowSegment =
 
 type alias GeoCoord = 
   {
-    latDeg: Float
-  , lonDeg: Float
+    lonDeg: Float
+  , latDeg: Float
   }
 
 type alias Model = 
@@ -58,6 +65,7 @@ type alias Model =
   , resourceId : String
   , jobId : String
   , flowSegments : Maybe FlowSegments
+  , resourceLocation : Maybe GeoCoord
   }
 
 init = 
@@ -65,7 +73,8 @@ init =
    , jobsAvailable = Nothing
    , resourceId = "Undefined"
    , jobId = "Undefined"
-   , flowSegments = Nothing}, Effects.none)
+   , flowSegments = Nothing
+   , resourceLocation = Nothing}, Effects.none)
 
 update action model =
   case action of 
@@ -74,13 +83,26 @@ update action model =
     ShowResources maybeResources ->
       ({model | resources = maybeResources}, Effects.none)
     GetJobsAvailableForResource id ->
-      ({model | resourceId = id}, (getJobsAvailable id)) 
+      ({model | resourceId = id}, getJobsAvailable id) 
     ShowJobsAvailable maybeJobs ->
-      ({model | jobsAvailable = maybeJobs}, Effects.none)
+      ({model | jobsAvailable = maybeJobs}, (getResourceLocation model.resourceId))
     GetFlowSegmentsForJob job ->
       ({model | jobId = job.id}, (getFlowSegmentsForJob job))
     ShowFlowSegments maybeFlowSegments ->
       ({model | flowSegments = maybeFlowSegments}, Effects.none)
+    UpdateResourceLocation maybeGeoCoord ->
+      ({model | resourceLocation = maybeGeoCoord}, Effects.none)
+
+getResourceLocation id = 
+  Http.get resourceLocationDecoder (resourceLocationUrl id)
+    |> toMaybeWithLogging
+    |> Task.map UpdateResourceLocation
+    |> Effects.task
+
+resourceLocationDecoder =
+  Decode.object2 GeoCoord
+    ("lon_degrees" := Decode.float)
+    ("lat_degrees" := Decode.float)
 
 getFlowSegmentsForJob : Job -> Effects Action
 getFlowSegmentsForJob job = 
@@ -158,20 +180,44 @@ view address model =
     , div [] (viewResourcesAvailable model address)
     , div [] (viewJobsAvailable model address)
     , div [] (viewFlowSegmentsAvailable model)
+    , div [] (viewResourceLocation model)
     ]
     
+viewResourceLocation model = 
+  case model.resourceLocation of
+    Nothing ->
+      [li [][Html.text "NO RESOURCE LOCATION"]]
+    Just resourceLocation ->
+      [li [][Html.text ((toString resourceLocation.lonDeg) ++ "," ++ (toString resourceLocation.latDeg))]]
+
 viewFlowSegmentsAvailable model = 
   case model.flowSegments of
     Nothing ->
-      [li [][text "zip"]]
+      [li [][Html.text "zip"]]
     Just flowSegments ->
       viewFlowSegments flowSegments
 
 viewFlowSegments flowSegments = 
-  List.map (\f -> viewFlowSegment f) flowSegments
+  let
+    segmentLines = List.map (\f -> drawFlowSegment f) flowSegments
+  in
+    [Html.fromElement (collage 800 600 ((drawBorder 800 600) :: segmentLines))]
+
+drawBorder width height = 
+  (filled (rgba 200 200 200 0.3) (rect width height))
+
+drawFlowSegment flowSegment = 
+  let
+    coords = parseGeometry flowSegment.geometry
+    coordsXY = List.map (\gc -> toXY gc) coords
+  in
+    (traced (solid blue) (path coords))
+
+toXY geoCoord = 
+  geoCoord
 
 viewFlowSegment flowSegment = 
-  li [] [text (flowSegment.id ++ " , " ++ flowSegment.geometry)]
+  li [] [Html.text (flowSegment.id ++ " , " ++ flowSegment.geometry)]
 
 parseGeometry geometry = 
   let 
