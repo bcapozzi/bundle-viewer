@@ -6,11 +6,13 @@ import Html exposing (..)
 import Effects exposing (Effects,Never)
 import Http
 import Html.Events exposing (..)
+import Html.Attributes exposing (..)
 import Json.Decode as Decode exposing (Decoder, (:=))
 import String
 import Graphics.Collage exposing (..)
 import Graphics.Element exposing (..)
 import Color exposing (..)
+import GeoUtils
 
 resourcesUrl = "http://localhost:3008/api/flow_debug/resources"
 
@@ -85,7 +87,7 @@ update action model =
     GetJobsAvailableForResource id ->
       ({model | resourceId = id}, getJobsAvailable id) 
     ShowJobsAvailable maybeJobs ->
-      ({model | jobsAvailable = maybeJobs}, (getResourceLocation model.resourceId))
+      ({model | jobsAvailable = maybeJobs, flowSegments=Nothing, jobId = "Undefined"}, (getResourceLocation model.resourceId))
     GetFlowSegmentsForJob job ->
       ({model | jobId = job.id}, (getFlowSegmentsForJob job))
     ShowFlowSegments maybeFlowSegments ->
@@ -176,7 +178,7 @@ toMaybeWithLogging task =
 
 view address model = 
   div []
-    [ div [] [button [ onClick address GetResources ] [Html.text "Click to get resources!" ]]
+    [ div [] [button [(onClick address GetResources)] [Html.text "Click to get resources!" ]]
     , div [] (viewResourcesAvailable model address)
     , div [] (viewJobsAvailable model address)
     , div [] (viewFlowSegmentsAvailable model)
@@ -193,28 +195,45 @@ viewResourceLocation model =
 viewFlowSegmentsAvailable model = 
   case model.flowSegments of
     Nothing ->
-      [li [][Html.text "zip"]]
+      [Html.fromElement (collage 800 600 [drawBorder 800 600])]
     Just flowSegments ->
-      viewFlowSegments flowSegments
+      viewFlowSegments flowSegments model
 
-viewFlowSegments flowSegments = 
+viewFlowSegments flowSegments model = 
   let
-    segmentLines = List.map (\f -> drawFlowSegment f) flowSegments
+    segmentLines = List.map (\f -> drawFlowSegment f model.resourceLocation) flowSegments
   in
-    [Html.fromElement (collage 800 600 ((drawBorder 800 600) :: segmentLines))]
+    [Html.fromElement (collage 800 600 ( (drawOrigin model.resourceId) :: ((drawBorder 800 600) :: segmentLines)) )]
+
+drawOrigin resourceId = 
+  (move (0,0) (filled blue (circle 4)))
 
 drawBorder width height = 
   (filled (rgba 200 200 200 0.3) (rect width height))
 
-drawFlowSegment flowSegment = 
+drawFlowSegment flowSegment maybeResourceLocation = 
   let
     coords = parseGeometry flowSegment.geometry
-    coordsXY = List.map (\gc -> toXY gc) coords
+    ref = getReferencePoint maybeResourceLocation
+    coordsXY = List.map (\gc -> toDisplayXY ref gc) coords
   in
-    (traced (solid blue) (path coords))
+    (traced (solid blue) (path coordsXY))
 
-toXY geoCoord = 
-  geoCoord
+getReferencePoint maybeResourceLocation = 
+  case maybeResourceLocation of
+    Nothing ->
+      {latDeg = 0, lonDeg = 0}
+    Just resourceLocation ->
+      {latDeg = resourceLocation.latDeg, lonDeg = resourceLocation.lonDeg}
+
+
+toDisplayXY geoRef geoTuple = 
+  let
+    (lon,lat) = geoTuple
+    xy_nmi = GeoUtils.toXY geoRef {latDeg = lat, lonDeg = lon}
+    (x_nmi, y_nmi) = xy_nmi
+  in
+    (x_nmi, y_nmi)
 
 viewFlowSegment flowSegment = 
   li [] [Html.text (flowSegment.id ++ " , " ++ flowSegment.geometry)]
@@ -256,26 +275,32 @@ viewJobsAvailable model address =
     Nothing ->
       [button [][Html.text "zilch"]]
     Just jobs ->
-      viewJobs jobs address
+      viewJobs jobs address model.jobId
 
-viewJobs jobs address = 
-  List.map (\j -> viewJob address j) jobs
+viewJobs jobs address currentJobId = 
+  List.map (\j -> viewJob address j currentJobId) jobs
 
-viewJob address job =
-  button [onClick address (GetFlowSegmentsForJob job)] [Html.text job.id]
+viewJob address job currentJobId =
+  button [(onClick address (GetFlowSegmentsForJob job)), style [("background-color", (getColorString job.id currentJobId))]] [Html.text job.id]
 
 viewResourcesAvailable model address = 
   case model.resources of
     Nothing ->
       [button [][Html.text "none"]]
     Just resources ->
-      viewResources resources address
+      viewResources resources address model.resourceId
 
-viewResources resources address = 
-  List.map (\r -> viewResource address r) resources
+viewResources resources address currentResourceId = 
+  List.map (\r -> viewResource address r currentResourceId) resources
 
-viewResource address r = 
-  button [onClick address (GetJobsAvailableForResource r) ][Html.text r]
+viewResource address r currentResourceId = 
+  button [(onClick address (GetJobsAvailableForResource r)),style [("background-color",(getColorString r currentResourceId))] ][Html.text r]
+
+getColorString resourceId currentResourceId = 
+  if resourceId == currentResourceId then
+    "red"
+  else
+    "gray"
 
 app = 
   StartApp.start 
