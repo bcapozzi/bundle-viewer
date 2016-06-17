@@ -13,6 +13,7 @@ import Graphics.Collage exposing (..)
 import Graphics.Element exposing (..)
 import Color exposing (..)
 import GeoUtils
+import Set
 
 resourcesUrl = "http://localhost:3008/api/flow_debug/resources"
 
@@ -25,6 +26,9 @@ flowSegmentsUrl job =
 resourceLocationUrl resourceId = 
   ("http://localhost:3008/api/flow_debug/resourceLocation/" ++ resourceId)
 
+flightsUrl resourceId jobId = 
+  ("http://localhost:3008/api/flow_debug/flights/" ++  resourceId ++ "/" ++ jobId)
+
 type Action 
   = GetResources
   | ShowResources (Maybe Resources)
@@ -33,6 +37,13 @@ type Action
   | GetFlowSegmentsForJob Job
   | ShowFlowSegments (Maybe FlowSegments)
   | UpdateResourceLocation (Maybe GeoCoord)
+  | UpdateFlights (Maybe Flights)
+
+type alias Flights = List Flight
+type alias Flight = 
+  { id : String
+  , routeGeometry: String
+  }
 
 type alias Resources = 
   List Resource
@@ -52,6 +63,7 @@ type alias FlowSegment =
   , geometry : String
   , numEnteringAtStart: Int
   , numJoiningInternal: Int
+  , startTime: String
   }
 
 type alias GeoCoord = 
@@ -68,6 +80,7 @@ type alias Model =
   , jobId : String
   , flowSegments : Maybe FlowSegments
   , resourceLocation : Maybe GeoCoord
+  , flights : Maybe Flights
   }
 
 init = 
@@ -76,7 +89,8 @@ init =
    , resourceId = "Undefined"
    , jobId = "Undefined"
    , flowSegments = Nothing
-   , resourceLocation = Nothing}, Effects.none)
+   , resourceLocation = Nothing
+   , flights = Nothing}, Effects.none)
 
 update action model =
   case action of 
@@ -91,9 +105,26 @@ update action model =
     GetFlowSegmentsForJob job ->
       ({model | jobId = job.id}, (getFlowSegmentsForJob job))
     ShowFlowSegments maybeFlowSegments ->
-      ({model | flowSegments = maybeFlowSegments}, Effects.none)
+      ({model | flowSegments = maybeFlowSegments}, (getFlightsOnFlowSegments model.jobId model.resourceId))
     UpdateResourceLocation maybeGeoCoord ->
       ({model | resourceLocation = maybeGeoCoord}, Effects.none)
+    UpdateFlights maybeFlights ->
+      ({model | flights = maybeFlights}, Effects.none)
+
+getFlightsOnFlowSegments jobId resourceId = 
+  Http.get flightsDecoder (flightsUrl resourceId jobId)
+    |> toMaybeWithLogging
+    |> Task.map UpdateFlights
+    |> Effects.task
+
+flightsDecoder =
+  Decode.object1 identity
+    ("flights" := Decode.list flightDecoder)
+
+flightDecoder = 
+  Decode.object2 Flight
+    ("flight_id" := Decode.string)
+    ("route_geom" := Decode.string)
 
 getResourceLocation id = 
   Http.get resourceLocationDecoder (resourceLocationUrl id)
@@ -120,11 +151,12 @@ flowSegmentsDecoder =
 
 flowSegmentDecoder : Decoder FlowSegment
 flowSegmentDecoder = 
-  Decode.object4 FlowSegment
+  Decode.object5 FlowSegment
     ("flow_segment_id" := Decode.string) 
     ("geom" := Decode.string)
     ("num_entering_at_start" := Decode.int)
     ("num_joining_internal" := Decode.int)
+    ("start_time" := Decode.string)
 
 geomDecoder = 
   Decode.object1 identity 
@@ -181,10 +213,58 @@ view address model =
     [ div [] [button [(onClick address GetResources)] [Html.text "Click to get resources!" ]]
     , div [] (viewResourcesAvailable model address)
     , div [] (viewJobsAvailable model address)
+    , div [] (viewStartTimesForJob model address)
     , div [] (viewFlowSegmentsAvailable model)
     , div [] (viewResourceLocation model)
+    , div [] (viewFlights model)
     ]
     
+viewStartTimesForJob model address = 
+  case model.flowSegments of
+    Nothing ->
+      [li [] [Html.text "NO FLOW SEGMENTS"]]
+    Just flowSegments ->
+      let 
+        allStartTimes = List.map (\fs -> fs.startTime) flowSegments
+        uniqueSet = Set.fromList allStartTimes
+        uniqueList = Set.toList uniqueSet
+      in
+        List.map (\s -> (button [] [Html.text s])) uniqueList
+
+viewFlights model = 
+  case model.flights of 
+    Nothing ->
+      [li [][Html.text "NO FLIGHTS"]]
+    Just flights ->
+      case model.flowSegments of
+        Nothing ->
+          [li [][Html.text "FLIGHTS BUT NO FLOW SEGMENTS"]]
+        Just flowSegments ->
+          let
+            refGeoCoord = getReferencePoint model.resourceLocation
+            route_paths = List.map (\f -> drawFlightRoute f refGeoCoord) flights
+            segment_paths = List.map (\f -> drawFlowSegment f model.resourceLocation) flowSegments
+          in
+            [Html.fromElement (collage 800 600 ((drawOrigin model.resourceId) :: (List.append route_paths segment_paths)))]
+
+--drawFlightRoutes flights (getReferencePoint model.resourceLocation)
+--List.map (\f -> li [][Html.text (f.id ++ " : " ++ f.routeGeometry)]) flights
+
+drawFlightRoutes flights refGeoCoord = 
+  let
+    paths = List.map (\f -> drawFlightRoute f refGeoCoord) flights
+  in
+    [Html.fromElement (collage 800 600 paths)]
+  
+drawFlightRoute flight ref = 
+  let
+    coords = parseGeometry flight.routeGeometry
+    coordsXY = List.map (\gc -> toDisplayXY ref gc) coords
+  in
+    (traced (solid red) (path coordsXY))
+
+    
+
 viewResourceLocation model = 
   case model.resourceLocation of
     Nothing ->
