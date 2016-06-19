@@ -20,8 +20,11 @@ resourcesUrl = "http://localhost:3008/api/flow_debug/resources"
 jobsUrl resourceId = 
   ("http://localhost:3008/api/flow_debug/jobs/" ++ resourceId)
 
-flowSegmentsUrl job = 
-  ("http://localhost:3008/api/flow_debug/flows/" ++  job.resourceId ++ "/" ++ job.id)
+startTimesUrl job = 
+  ("http://localhost:3008/api/flow_debug/startTimes/" ++  job.resourceId ++ "/" ++ job.id)
+
+flowSegmentsUrl resourceId jobId startTime = 
+  ("http://localhost:3008/api/flow_debug/flows/" ++  resourceId ++ "/" ++ jobId ++ "/" ++ startTime)
 
 resourceLocationUrl resourceId = 
   ("http://localhost:3008/api/flow_debug/resourceLocation/" ++ resourceId)
@@ -34,10 +37,18 @@ type Action
   | ShowResources (Maybe Resources)
   | GetJobsAvailableForResource String
   | ShowJobsAvailable (Maybe Jobs)
-  | GetFlowSegmentsForJob Job
+  | GetStartTimesForJob Job
+  | UpdateStartTimes (Maybe StartTimes)
+  | GetFlowSegmentsForJob String String String
   | ShowFlowSegments (Maybe FlowSegments)
   | UpdateResourceLocation (Maybe GeoCoord)
   | UpdateFlights (Maybe Flights)
+  | SelectJob Job
+
+type alias StartTimes = List StartTime
+type alias StartTime = {
+  timestamp : String
+}
 
 type alias Flights = List Flight
 type alias Flight = 
@@ -81,6 +92,8 @@ type alias Model =
   , flowSegments : Maybe FlowSegments
   , resourceLocation : Maybe GeoCoord
   , flights : Maybe Flights
+  , startTimes : Maybe StartTimes
+  , startTime : String
   }
 
 init = 
@@ -90,7 +103,9 @@ init =
    , jobId = "Undefined"
    , flowSegments = Nothing
    , resourceLocation = Nothing
-   , flights = Nothing}, Effects.none)
+   , flights = Nothing
+   , startTimes = Nothing
+   , startTime = "Undefined"}, Effects.none)
 
 update action model =
   case action of 
@@ -102,14 +117,34 @@ update action model =
       ({model | resourceId = id}, getJobsAvailable id) 
     ShowJobsAvailable maybeJobs ->
       ({model | jobsAvailable = maybeJobs, flowSegments=Nothing, jobId = "Undefined"}, (getResourceLocation model.resourceId))
-    GetFlowSegmentsForJob job ->
-      ({model | jobId = job.id}, (getFlowSegmentsForJob job))
+    GetStartTimesForJob job ->
+      ({model | jobId = job.id}, (getStartTimesForJob job))
+    UpdateStartTimes maybeStartTimes ->
+      ({model | startTimes = maybeStartTimes}, Effects.none)
+    GetFlowSegmentsForJob resourceId jobId startTime ->
+      ({model | startTime = startTime}, (getFlowSegmentsForJob resourceId jobId startTime))
     ShowFlowSegments maybeFlowSegments ->
       ({model | flowSegments = maybeFlowSegments}, (getFlightsOnFlowSegments model.jobId model.resourceId))
     UpdateResourceLocation maybeGeoCoord ->
       ({model | resourceLocation = maybeGeoCoord}, Effects.none)
     UpdateFlights maybeFlights ->
       ({model | flights = maybeFlights}, Effects.none)
+    SelectJob job ->
+      ({model | jobId = job.id}, Effects.none)
+
+getStartTimesForJob job = 
+  Http.get startTimesDecoder (startTimesUrl job)
+    |> toMaybeWithLogging
+    |> Task.map UpdateStartTimes
+    |> Effects.task
+
+startTimesDecoder = 
+  Decode.object1 identity
+    ("startTimes" := Decode.list startTimeDecoder)
+
+startTimeDecoder = 
+  Decode.object1 StartTime
+    ("start_time" := Decode.string)
 
 getFlightsOnFlowSegments jobId resourceId = 
   Http.get flightsDecoder (flightsUrl resourceId jobId)
@@ -137,9 +172,9 @@ resourceLocationDecoder =
     ("lon_degrees" := Decode.float)
     ("lat_degrees" := Decode.float)
 
-getFlowSegmentsForJob : Job -> Effects Action
-getFlowSegmentsForJob job = 
-  Http.get flowSegmentsDecoder (flowSegmentsUrl job)
+--getFlowSegmentsForJob : String -> Effects Action
+getFlowSegmentsForJob resourceId jobId startTime = 
+  Http.get flowSegmentsDecoder (flowSegmentsUrl resourceId jobId startTime)
     |> toMaybeWithLogging
     |> Task.map ShowFlowSegments
     |> Effects.task
@@ -214,22 +249,25 @@ view address model =
     , div [] (viewResourcesAvailable model address)
     , div [] (viewJobsAvailable model address)
     , div [] (viewStartTimesForJob model address)
-    , div [] (viewFlowSegmentsAvailable model)
+--    , div [] (viewFlowSegmentsAvailable model)
     , div [] (viewResourceLocation model)
     , div [] (viewFlights model)
     ]
     
 viewStartTimesForJob model address = 
-  case model.flowSegments of
+  case model.startTimes of
     Nothing ->
-      [li [] [Html.text "NO FLOW SEGMENTS"]]
-    Just flowSegments ->
+      [li [] [Html.text "NO START TIMES"]]
+    Just startTimes ->
       let 
-        allStartTimes = List.map (\fs -> fs.startTime) flowSegments
+        allStartTimes = List.map (\fs -> fs.timestamp) startTimes
         uniqueSet = Set.fromList allStartTimes
         uniqueList = Set.toList uniqueSet
       in
-        List.map (\s -> (button [] [Html.text s])) uniqueList
+        List.map (\s -> (viewStartTimeForJob address model.resourceId model.jobId s model.startTime)) uniqueList
+
+viewStartTimeForJob address resourceId jobId startTime currentStartTime =
+  button [(onClick address (GetFlowSegmentsForJob resourceId jobId startTime)), style [("background-color", (getColorString startTime currentStartTime))]] [Html.text startTime]
 
 viewFlights model = 
   case model.flights of 
@@ -246,9 +284,6 @@ viewFlights model =
             segment_paths = List.map (\f -> drawFlowSegment f model.resourceLocation) flowSegments
           in
             [Html.fromElement (collage 800 600 ((drawOrigin model.resourceId) :: (List.append route_paths segment_paths)))]
-
---drawFlightRoutes flights (getReferencePoint model.resourceLocation)
---List.map (\f -> li [][Html.text (f.id ++ " : " ++ f.routeGeometry)]) flights
 
 drawFlightRoutes flights refGeoCoord = 
   let
@@ -296,8 +331,10 @@ drawFlowSegment flowSegment maybeResourceLocation =
     coords = parseGeometry flowSegment.geometry
     ref = getReferencePoint maybeResourceLocation
     coordsXY = List.map (\gc -> toDisplayXY ref gc) coords
+    lineStyle = (solid (rgba 0 0 255 0.3))
+    widerStyle = {lineStyle | width = 5}
   in
-    (traced (solid blue) (path coordsXY))
+    (traced widerStyle (path coordsXY))
 
 getReferencePoint maybeResourceLocation = 
   case maybeResourceLocation of
@@ -361,7 +398,7 @@ viewJobs jobs address currentJobId =
   List.map (\j -> viewJob address j currentJobId) jobs
 
 viewJob address job currentJobId =
-  button [(onClick address (GetFlowSegmentsForJob job)), style [("background-color", (getColorString job.id currentJobId))]] [Html.text job.id]
+  button [(onClick address (GetStartTimesForJob job)), style [("background-color", (getColorString job.id currentJobId))]] [Html.text job.id]
 
 viewResourcesAvailable model address = 
   case model.resources of
