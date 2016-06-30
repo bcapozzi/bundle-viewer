@@ -36,6 +36,7 @@ type alias Model =
   , layersAvailable : List String
   , selectedLayer : String
   , inputRoutes : Maybe InputRoutes
+  , flowSegments : Maybe FlowSegments
   }
 
 type alias Algorithms = List Algorithm
@@ -53,8 +54,10 @@ type alias InputRoute =
 
 type alias FlowSegments = List FlowSegment
 type alias FlowSegment = 
-  { id : String
+  { id : Int
+  , contributorID : Int
   , geometry : String
+  , contributorGeometry : String
   }
 
 
@@ -89,7 +92,8 @@ init =
    , selectedProblemID = "NONE"
    , layersAvailable = []
    , selectedLayer = "NONE"
-   , inputRoutes = Nothing}, Effects.none)
+   , inputRoutes = Nothing
+   , flowSegments = Nothing}, Effects.none)
 
 view address model = 
   div []
@@ -99,6 +103,7 @@ view address model =
     , div [] (viewLayersAvailableFor model address)
     , div [] (viewInputRoutes model)
     , div [] (viewSelectedAirportLocation model)
+    , div [] (viewFlowSegments model)
     ]
     
 
@@ -139,7 +144,7 @@ update action model =
     UpdateInputRoutes maybeInputRoutes ->
       ({model | inputRoutes = maybeInputRoutes}, Effects.none)
     UpdateFlowSegments maybeFlowSegments ->
-      (model, Effects.none)
+      ({model | flowSegments = maybeFlowSegments}, Effects.none)
 
 selectProblemsForAirport model selectedAirport = 
   case model.problems of
@@ -204,9 +209,11 @@ flowSegmentsDecoder =
     ("flow_segments" := Decode.list flowSegmentDecoder)
 
 flowSegmentDecoder = 
-  Decode.object2 FlowSegment
-    ("flow_segment_id" := Decode.string)
-    ("geom" := Decode.string)
+  Decode.object4 FlowSegment
+    ("output_flow_segment_id" := Decode.int)
+    ("contributor_id" := Decode.int)
+    ("flow_geom" := Decode.string) 
+    ("contributor_geom" := Decode.string)
 
 inputRoutesDecoder =
   Decode.object1 identity
@@ -270,12 +277,94 @@ viewInputRoutes model =
     Nothing ->
       [button [][Html.text "NO ROUTES"]]
     Just inputRoutes ->
---      let
---        refGeoCoord = getReferencePoint model.selectedAirport
-      List.map (\r -> viewInputRoute r) inputRoutes
+      let
+        refGeoCoord = getReferencePoint model.selectedAirportLocation
+        routePaths = List.map (\f -> drawInputRoute f refGeoCoord) inputRoutes
+      in
+        [Html.fromElement (collage 800 600 ((drawOrigin model.selectedAirport) :: routePaths))]
+--        List.map (\r -> viewInputRoute r) inputRoutes
+
+viewFlowSegments model = 
+  case model.flowSegments of
+    Nothing ->
+      [button [][Html.text "NO FLOW SEGMENTS"]]
+    Just flowSegments ->
+      let
+        refGeoCoord = getReferencePoint model.selectedAirportLocation
+        segmentPaths = List.map (\f -> drawFlowSegment f refGeoCoord) flowSegments
+      in
+        [Html.fromElement (collage 800 600 ((drawOrigin model.selectedAirport) :: (segmentPaths)))]
+--      [button [][Html.text "SOME FLOW SEGMENTS"]]
+
+drawFlowSegment flowSegment ref = 
+  let
+    coords = parseGeometry flowSegment.geometry
+    coordsXY = List.map (\gc -> toDisplayXY ref gc) coords
+    lineStyle = (solid (rgba 0 0 255 0.3))
+    widerStyle = {lineStyle | width = 5}
+  in
+    (traced widerStyle (path coordsXY))
+
+
+drawOrigin resourceId = 
+  (move (0,0) (filled blue (circle 4)))
+
+getReferencePoint maybeLocation = 
+  case maybeLocation of
+    Nothing ->
+      {lonDeg = 0.0, latDeg = 0.0}
+    Just location ->
+      location
 
 viewInputRoute inputRoute =
   button [][Html.text inputRoute.flightID]
+
+drawInputRoute route ref = 
+  let
+    coords = parseGeometry route.geometry
+    coordsXY = List.map (\gc -> toDisplayXY ref gc) coords
+  in
+    (traced (solid gray) (path coordsXY))
+
+toDisplayXY geoRef geoTuple = 
+  let
+    (lon,lat) = geoTuple
+    xy_nmi = GeoUtils.toXY geoRef {latDeg = lat, lonDeg = lon}
+    (x_nmi, y_nmi) = xy_nmi
+  in
+    (x_nmi, y_nmi)
+
+parseGeometry geometry = 
+  let 
+    pairList = String.split "," (String.dropRight 1 (String.dropLeft 11 geometry))
+  in
+    List.map (\p -> parsePoint p) pairList
+
+parsePoint pointPair = 
+  let
+    pointStrings = String.words pointPair
+    lonString = getFirst pointStrings
+    latString = getLast pointStrings
+    lonDegrees = (Result.withDefault 0.0 (String.toFloat lonString))
+    latDegrees = (Result.withDefault 0.0 (String.toFloat latString))
+  in
+    (lonDegrees, latDegrees)
+
+getFirst pair = 
+  let
+    first = List.head pair
+  in 
+    case first of
+      Nothing ->
+        "None"
+      Just value ->
+        value
+
+getLast pair = 
+  let
+    second = List.drop 1 pair
+  in
+    getFirst second
 
 viewSelectedAirportLocation model =
   case model.selectedAirportLocation of
@@ -290,9 +379,4 @@ getColorString resourceId currentResourceId =
   else
     "gray"
 
-getReferencePoint maybeResourceLocation = 
-  case maybeResourceLocation of
-    Nothing ->
-      {latDeg = 0, lonDeg = 0}
-    Just resourceLocation ->
-      {latDeg = resourceLocation.latDeg, lonDeg = resourceLocation.lonDeg}
+
