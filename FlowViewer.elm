@@ -33,10 +33,16 @@ type alias Model =
   , selectedAirportLocation : Maybe GeoPoint2D
   , problemsForSelectedAirport : List String
   , selectedProblemID : String
-  , layersAvailable : List String
+  , layersAvailable : List FlowLayer
   , selectedLayer : String
   , inputRoutes : Maybe InputRoutes
   , flowSegments : Maybe FlowSegments
+  }
+
+type alias FlowLayer = 
+  {
+    name : String
+  , isSelected : Bool
   }
 
 type alias Algorithms = List Algorithm
@@ -101,17 +107,19 @@ view address model =
     , div [] (viewAirportsAvailable model address)
     , div [] (viewProblemsAvailableForAirport model address)
     , div [] (viewLayersAvailableFor model address)
-    , div [] (viewInputRoutes model)
     , div [] (viewSelectedAirportLocation model)
-    , div [] (viewFlowSegments model)
+    , div [] (viewFlowLayers model)
+--    , div [] (viewFlowSegments model)
     ]
     
 
 type Action 
   = GetAvailableProblems
+  | UpdateSelectedAirport String
   | UpdateAvailableProblems (Maybe Problems)
   | UpdateSelectedAirportLocation (Maybe GeoPoint2D)
   | GetProblemsAvailableForAirport String
+  | UpdateSelectedProblem String
   | GetLayersAvailableForProblem String
   | UpdateAvailableLayers (Maybe Algorithms)
   | UpdateSelectedLayer String
@@ -122,12 +130,16 @@ update action model =
   case action of 
     GetAvailableProblems ->
       (model, getAvailableProblems)
+    UpdateSelectedAirport airport ->
+      ({model | selectedAirport = airport, problemsForSelectedAirport = (selectProblemsForAirport model airport), inputRoutes=Nothing, flowSegments=Nothing, selectedProblemID = "NONE", selectedLayer = "NONE", layersAvailable=[]}, getSelectedAirportLocation airport)
     UpdateSelectedAirportLocation maybeLocation ->
       ({model | selectedAirportLocation = maybeLocation}, Effects.none)
     UpdateAvailableProblems maybeProblems ->
       ({model | problems = maybeProblems}, Effects.none) 
+    UpdateSelectedProblem problemID ->
+      ({model | selectedProblemID = problemID}, (getLayersAvailableForProblem model.selectedAirport problemID))
     GetProblemsAvailableForAirport airport ->
-      ({model | selectedAirport = airport, problemsForSelectedAirport = (selectProblemsForAirport model airport)}, (getSelectedAirportLocation airport))
+      ({model | selectedAirport = airport, problemsForSelectedAirport = (selectProblemsForAirport model airport)}, Effects.none)
     GetLayersAvailableForProblem problemID ->
       ({model | selectedProblemID = problemID}, (getLayersAvailableForProblem model.selectedAirport problemID))
     UpdateAvailableLayers maybeAlgorithms ->
@@ -136,15 +148,18 @@ update action model =
           (model, Effects.none)
         Just algorithms ->
           let
-            names = List.map (\a -> a.name) algorithms
+            names = List.map (\a -> {name = a.name, isSelected = False}) algorithms
           in
-            ({model | layersAvailable = ("InputRoutes" :: names)}, Effects.none)
+            ({model | layersAvailable = ({name = "InputRoutes", isSelected = False} :: names)}, Effects.none)
     UpdateSelectedLayer layer ->
-      ({model | selectedLayer = layer}, (getContentsForLayer model.selectedProblemID layer))
+      ({model | selectedLayer = layer, layersAvailable = (updateLayersGivenSelected layer model.layersAvailable)}, (getContentsForLayer model.selectedProblemID layer))
     UpdateInputRoutes maybeInputRoutes ->
       ({model | inputRoutes = maybeInputRoutes}, Effects.none)
     UpdateFlowSegments maybeFlowSegments ->
       ({model | flowSegments = maybeFlowSegments}, Effects.none)
+
+updateLayersGivenSelected selected layersAvailable =
+  List.map (\layer -> if (layer.name == selected) then {name = layer.name, isSelected = True && (not layer.isSelected)} else {name = layer.name, isSelected = (layer.isSelected && True)}) layersAvailable
 
 selectProblemsForAirport model selectedAirport = 
   case model.problems of
@@ -258,19 +273,44 @@ viewAirports problems currentAirport address =
     List.map (\a -> viewAirport a currentAirport address) uniqueAirports
 
 viewAirport airport currentAirport address = 
-  button [(onClick address (GetProblemsAvailableForAirport airport)), style [("background-color",(getColorString airport currentAirport))]] [Html.text airport]
+  button [(onClick address (UpdateSelectedAirport airport)), style [("background-color",(getColorString airport currentAirport))]] [Html.text airport]
 
 viewProblemsAvailableForAirport model address =
   List.map (\p -> viewProblem p model.selectedProblemID address) model.problemsForSelectedAirport
 
 viewProblem problemID selectedProblemID address = 
-  button [(onClick address (GetLayersAvailableForProblem problemID)), style [("background-color",(getColorString problemID selectedProblemID))]] [Html.text problemID]
+  button [(onClick address (UpdateSelectedProblem problemID)), style [("background-color",(getColorString problemID selectedProblemID))]] [Html.text problemID]
 
-viewLayersAvailableFor model address = 
-  List.map (\layer -> viewLayer layer model.selectedLayer address) model.layersAvailable
+viewLayersAvailableFor model address =
+  List.map (\layer -> viewLayer layer.name model.selectedLayer model.layersAvailable address) model.layersAvailable
 
-viewLayer layer selectedLayer address = 
-  button [(onClick address (UpdateSelectedLayer layer)), style [("background-color",(getColorString layer selectedLayer))]] [Html.text layer]
+viewLayer layer selectedLayer layersAvailable address = 
+  button [(onClick address (UpdateSelectedLayer layer)), style [("background-color",(getLayerColorString layer selectedLayer layersAvailable))]] [Html.text layer]
+
+viewFlowLayers model = 
+  case model.inputRoutes of 
+    Nothing ->
+      case model.flowSegments of
+        Nothing ->
+          [button [][Html.text "NO ROUTES OR FLOW SEGMENTS"]]
+        Just flowSegments ->
+          viewFlowSegments model
+    Just inputRoutes ->
+      case model.flowSegments of
+        Nothing ->
+           viewInputRoutes model
+        Just flowSegments ->
+           (viewInputRoutesAndFlowSegments model.selectedAirport model.selectedAirportLocation inputRoutes flowSegments)
+
+viewInputRoutesAndFlowSegments selectedAirport selectedAirportLocation inputRoutes flowSegments =
+  let
+    refGeoCoord = getReferencePoint selectedAirportLocation
+    routePaths = List.map (\f -> drawInputRoute f refGeoCoord) inputRoutes
+    segmentPaths = List.map (\f -> drawFlowSegment f refGeoCoord) flowSegments
+  in
+    [Html.fromElement (collage 800 600 ((drawOrigin selectedAirport) :: (List.append routePaths segmentPaths)))]
+--        List.map (\r -> viewInputRoute r) inputRoutes
+    
 
 viewInputRoutes model = 
   case model.inputRoutes of
@@ -379,4 +419,13 @@ getColorString resourceId currentResourceId =
   else
     "gray"
 
+getLayerColorString layerName selectedLayerName layersAvailable = 
+  let
+    isSelected = List.filter (\layer -> (layer.isSelected == True && layer.name == layerName)) layersAvailable
+  in
+    if ((List.length isSelected) > 0) then
+      "red"
+    else
+      "gray"
+  
 
