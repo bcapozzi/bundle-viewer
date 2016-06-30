@@ -1,8 +1,8 @@
 module GeoUtils where
 
 type alias GeoPoint2D = 
-  { latDeg: Float,
-    lonDeg: Float
+  { lonDeg: Float,
+    latDeg: Float
   }
 
 toRadians deg = 
