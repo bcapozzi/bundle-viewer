@@ -13,6 +13,8 @@ import Color exposing (..)
 import GeoUtils exposing (..)
 import Set
 
+artccBoundariesUrl = "http://localhost:3008/api/flow_viz/artccBoundaries"
+
 availableProblemsUrl = "http://localhost:3008/api/flow_viz/availableProblems"
 
 airportLocationUrl airportId = 
@@ -37,6 +39,19 @@ type alias Model =
   , selectedLayer : String
   , inputRoutes : Maybe InputRoutes
   , flowSegments : Maybe FlowSegments
+  , displayWidthNMI : Float
+  , displayHeightNMI : Float
+  , displayOriginX : Float
+  , displayOriginY : Float
+  , artccBoundaries : Maybe ArtccBoundaries
+  }
+
+type alias ArtccBoundaries = List ArtccBoundary
+
+type alias ArtccBoundary = 
+  { name : String
+  , id : String
+  , geometry : String 
   }
 
 type alias FlowLayer = 
@@ -99,17 +114,25 @@ init =
    , layersAvailable = []
    , selectedLayer = "NONE"
    , inputRoutes = Nothing
-   , flowSegments = Nothing}, Effects.none)
+   , flowSegments = Nothing
+   , displayWidthNMI = 800.0
+   , displayHeightNMI = 600.0
+   , displayOriginX = 0.0
+   , displayOriginY = 0.0
+   , artccBoundaries = Nothing}, Effects.none)
 
 view address model = 
   div []
-    [ div [] [button [(onClick address GetAvailableProblems)] [Html.text "Click to get available problems!"]]
+    [ div [] [button [(onClick address GetArtccBoundaries)] [Html.text "Click to get ARTCC boundaries"]]
+    , div [] [button [(onClick address GetAvailableProblems)] [Html.text "Click to get available problems!"]]
     , div [] (viewAirportsAvailable model address)
     , div [] (viewProblemsAvailableForAirport model address)
     , div [] (viewLayersAvailableFor model address)
     , div [] (viewSelectedAirportLocation model)
     , div [] (viewFlowLayers model)
---    , div [] (viewFlowSegments model)
+    , div [] (viewArtccBoundaries model)
+    , div [] [button [onClick address ZoomIn][Html.text "Zoom In"], button [onClick address ZoomOut][Html.text "Zoom Out"]]
+    , div [] [button [onClick address PanLeft][Html.text "Pan Left"], button [onClick address PanRight][Html.text "Pan Right"],  button [onClick address PanUp][Html.text "Pan Up"], button [onClick address PanDown][Html.text "Pan Down"]]
     ]
     
 
@@ -125,9 +148,39 @@ type Action
   | UpdateSelectedLayer String
   | UpdateInputRoutes (Maybe InputRoutes)
   | UpdateFlowSegments (Maybe FlowSegments)
+  | ZoomIn 
+  | ZoomOut
+  | PanLeft
+  | PanRight
+  | PanUp
+  | PanDown
+  | GetArtccBoundaries
+  | UpdateArtccBoundaries (Maybe ArtccBoundaries)
 
 update action model = 
-  case action of 
+  case action of
+    GetArtccBoundaries ->
+      (model, getArtccBoundaries)
+    UpdateArtccBoundaries maybeBoundaries ->
+      ({model | artccBoundaries = maybeBoundaries}, Effects.none)
+    ZoomIn ->
+      ({model | displayWidthNMI = model.displayWidthNMI*0.9
+              , displayHeightNMI = model.displayHeightNMI*0.9}, Effects.none)
+    ZoomOut ->
+      ({model | displayWidthNMI = model.displayWidthNMI*1.1
+              , displayHeightNMI = model.displayHeightNMI*1.1}, Effects.none)
+    PanLeft ->
+      ({model | displayOriginX = model.displayOriginX + 0.1*800},  Effects.none)
+ 
+    PanRight ->
+      ({model | displayOriginX = model.displayOriginX - 0.1*800},  Effects.none)
+ 
+    PanUp ->
+      ({model | displayOriginY = model.displayOriginY - 0.1*600},  Effects.none)
+ 
+    PanDown ->
+      ({model | displayOriginY = model.displayOriginY + 0.1*600},  Effects.none)
+ 
     GetAvailableProblems ->
       (model, getAvailableProblems)
     UpdateSelectedAirport airport ->
@@ -137,7 +190,10 @@ update action model =
     UpdateAvailableProblems maybeProblems ->
       ({model | problems = maybeProblems}, Effects.none) 
     UpdateSelectedProblem problemID ->
-      ({model | selectedProblemID = problemID}, (getLayersAvailableForProblem model.selectedAirport problemID))
+      ({model | selectedProblemID = problemID
+              , inputRoutes = Nothing
+              , flowSegments = Nothing
+              , selectedLayer = "NONE"}, (getLayersAvailableForProblem model.selectedAirport problemID))
     GetProblemsAvailableForAirport airport ->
       ({model | selectedAirport = airport, problemsForSelectedAirport = (selectProblemsForAirport model airport)}, Effects.none)
     GetLayersAvailableForProblem problemID ->
@@ -152,12 +208,29 @@ update action model =
           in
             ({model | layersAvailable = ({name = "InputRoutes", isSelected = False} :: names)}, Effects.none)
     UpdateSelectedLayer layer ->
-      ({model | selectedLayer = layer, layersAvailable = (updateLayersGivenSelected layer model.layersAvailable)}, (getContentsForLayer model.selectedProblemID layer))
+      ({model | selectedLayer = layer
+              , layersAvailable = (updateLayersGivenSelected layer model.layersAvailable)
+              , inputRoutes = (updateInputRoutesGivenSelected model.layersAvailable model.inputRoutes)
+              , flowSegments = (updateFlowSegmentsGivenSelected model.layersAvailable model.flowSegments)}, (getContentsForLayer model.selectedProblemID layer))
     UpdateInputRoutes maybeInputRoutes ->
       ({model | inputRoutes = maybeInputRoutes}, Effects.none)
     UpdateFlowSegments maybeFlowSegments ->
       ({model | flowSegments = maybeFlowSegments}, Effects.none)
 
+updateInputRoutesGivenSelected layersAvailable maybeInputRoutes =
+  let
+    selectedLayers = List.filter (\layer -> (layer.isSelected == True)) layersAvailable
+    selectedNames = List.map (\layer -> layer.name) selectedLayers
+    inputRoutesSelected = List.member "InputRoutes" selectedNames
+  in
+    if (inputRoutesSelected == True) then
+      maybeInputRoutes
+    else
+      Nothing
+
+updateFlowSegmentsGivenSelected layersAvailable maybeFlowSegments =
+  maybeFlowSegments
+  
 updateLayersGivenSelected selected layersAvailable =
   List.map (\layer -> if (layer.name == selected) then {name = layer.name, isSelected = True && (not layer.isSelected)} else {name = layer.name, isSelected = (layer.isSelected && True)}) layersAvailable
 
@@ -176,6 +249,22 @@ isForAirport target problem =
     True
   else
     False
+
+getArtccBoundaries = 
+    Http.get artccBoundariesDecoder artccBoundariesUrl
+    |> toMaybeWithLogging
+    |> Task.map UpdateArtccBoundaries
+    |> Effects.task
+
+artccBoundariesDecoder = 
+  Decode.object1 identity
+    ("artcc_boundaries" := Decode.list artccBoundaryDecoder)
+
+artccBoundaryDecoder = 
+  Decode.object3 ArtccBoundary
+    ("name" := Decode.string)
+    ("ncr_id" := Decode.string) 
+    ("geom" := Decode.string)
 
 getSelectedAirportLocation airport = 
     Http.get airportLocationDecoder (airportLocationUrl airport)
@@ -256,7 +345,12 @@ algorithmDecoder =
   Decode.object1 Algorithm
     ("clustering_strategy" := Decode.string)
 
-
+viewArtccBoundaries model = 
+  case model.artccBoundaries of 
+    Nothing -> 
+      [button [][Html.text "no artcc boundaries"]]
+    Just boundaries ->
+      [button [][Html.text "some artcc boundaries"]]
 
 viewAirportsAvailable model address = 
   case model.problems of
@@ -292,7 +386,11 @@ viewFlowLayers model =
     Nothing ->
       case model.flowSegments of
         Nothing ->
-          [button [][Html.text "NO ROUTES OR FLOW SEGMENTS"]]
+          let 
+            artccPaths = generateArtccBoundaryPaths model
+          in
+            [Html.fromElement (collage 800 600 artccPaths)]
+--          [button [][Html.text "NO ROUTES OR FLOW SEGMENTS"]]
         Just flowSegments ->
           viewFlowSegments model
     Just inputRoutes ->
@@ -300,15 +398,15 @@ viewFlowLayers model =
         Nothing ->
            viewInputRoutes model
         Just flowSegments ->
-           (viewInputRoutesAndFlowSegments model.selectedAirport model.selectedAirportLocation inputRoutes flowSegments)
+           (viewInputRoutesAndFlowSegments model.displayOriginX model.displayOriginY model.displayWidthNMI model.displayHeightNMI model.selectedAirport model.selectedAirportLocation inputRoutes flowSegments)
 
-viewInputRoutesAndFlowSegments selectedAirport selectedAirportLocation inputRoutes flowSegments =
+viewInputRoutesAndFlowSegments originX originY displayWidth displayHeight selectedAirport selectedAirportLocation inputRoutes flowSegments =
   let
     refGeoCoord = getReferencePoint selectedAirportLocation
-    routePaths = List.map (\f -> drawInputRoute f refGeoCoord) inputRoutes
-    segmentPaths = List.map (\f -> drawFlowSegment f refGeoCoord) flowSegments
+    routePaths = List.map (\f -> drawInputRoute f refGeoCoord originX originY displayWidth displayHeight) inputRoutes
+    segmentPaths = List.map (\f -> drawFlowSegment f refGeoCoord originX originY displayWidth displayHeight) flowSegments
   in
-    [Html.fromElement (collage 800 600 ((drawOrigin selectedAirport) :: (List.append routePaths segmentPaths)))]
+    [Html.fromElement (collage 800 600 ((drawOrigin selectedAirport originX originY) :: (List.append routePaths segmentPaths)))]
 --        List.map (\r -> viewInputRoute r) inputRoutes
     
 
@@ -318,11 +416,30 @@ viewInputRoutes model =
       [button [][Html.text "NO ROUTES"]]
     Just inputRoutes ->
       let
+        artccPaths = generateArtccBoundaryPaths model
         refGeoCoord = getReferencePoint model.selectedAirportLocation
-        routePaths = List.map (\f -> drawInputRoute f refGeoCoord) inputRoutes
+        routePaths = List.map (\f -> drawInputRoute f refGeoCoord model.displayOriginX model.displayOriginY model.displayWidthNMI model.displayHeightNMI) inputRoutes
       in
-        [Html.fromElement (collage 800 600 ((drawOrigin model.selectedAirport) :: routePaths))]
+        [Html.fromElement (collage 800 600 ((drawOrigin model.selectedAirport model.displayOriginX model.displayOriginY) :: (List.append artccPaths routePaths)))]
 --        List.map (\r -> viewInputRoute r) inputRoutes
+
+generateArtccBoundaryPaths model =
+  case model.artccBoundaries of 
+    Nothing ->
+      []
+    Just boundaries ->
+      let 
+        refGeoCoord = getReferencePoint model.selectedAirportLocation
+      in 
+        List.map (\b -> generateBoundaryPath b refGeoCoord model.displayOriginX model.displayOriginY model.displayWidthNMI model.displayHeightNMI) boundaries
+
+generateBoundaryPath boundary ref originX originY displayWidth displayHeight = 
+  let
+    coords = parsePolygonGeometry boundary.geometry
+    coordsXY = List.map (\gc -> toDisplayXY ref gc originX originY displayWidth displayHeight) coords
+  in
+    (traced (solid green) (path coordsXY))
+
 
 viewFlowSegments model = 
   case model.flowSegments of
@@ -331,52 +448,66 @@ viewFlowSegments model =
     Just flowSegments ->
       let
         refGeoCoord = getReferencePoint model.selectedAirportLocation
-        segmentPaths = List.map (\f -> drawFlowSegment f refGeoCoord) flowSegments
+        segmentPaths = List.map (\f -> drawFlowSegment f refGeoCoord model.displayOriginX model.displayOriginY model.displayWidthNMI model.displayHeightNMI) flowSegments
       in
-        [Html.fromElement (collage 800 600 ((drawOrigin model.selectedAirport) :: (segmentPaths)))]
+        [Html.fromElement (collage 800 600 ((drawOrigin model.selectedAirport model.displayOriginX model.displayOriginY) :: (segmentPaths)))]
 --      [button [][Html.text "SOME FLOW SEGMENTS"]]
 
-drawFlowSegment flowSegment ref = 
+drawFlowSegment flowSegment ref originX originY displayWidth displayHeight = 
   let
     coords = parseGeometry flowSegment.geometry
-    coordsXY = List.map (\gc -> toDisplayXY ref gc) coords
+    coordsXY = List.map (\gc -> toDisplayXY ref gc originX originY displayWidth displayHeight) coords
     lineStyle = (solid (rgba 0 0 255 0.3))
     widerStyle = {lineStyle | width = 5}
   in
     (traced widerStyle (path coordsXY))
 
 
-drawOrigin resourceId = 
-  (move (0,0) (filled blue (circle 4)))
+drawOrigin resourceId originX originY = 
+  (move (originX,originY) (filled blue (circle 4)))
 
 getReferencePoint maybeLocation = 
   case maybeLocation of
     Nothing ->
-      {lonDeg = 0.0, latDeg = 0.0}
+      {lonDeg = -97.0, latDeg = 32.0}
     Just location ->
       location
 
 viewInputRoute inputRoute =
   button [][Html.text inputRoute.flightID]
 
-drawInputRoute route ref = 
+drawInputRoute route ref originX originY displayWidth displayHeight= 
   let
     coords = parseGeometry route.geometry
-    coordsXY = List.map (\gc -> toDisplayXY ref gc) coords
+    coordsXY = List.map (\gc -> toDisplayXY ref gc originX originY displayWidth displayHeight) coords
   in
     (traced (solid gray) (path coordsXY))
 
-toDisplayXY geoRef geoTuple = 
+toDisplayXY geoRef geoTuple originX originY displayWidthNMI displayHeightNMI = 
   let
     (lon,lat) = geoTuple
     xy_nmi = GeoUtils.toXY geoRef {latDeg = lat, lonDeg = lon}
     (x_nmi, y_nmi) = xy_nmi
+    x_display = originX + x_nmi / displayWidthNMI * displayWidthPixels
+    y_display = originY + y_nmi / displayHeightNMI * displayHeightPixels
   in
-    (x_nmi, y_nmi)
+    (x_display, y_display)
+
+displayWidthPixels = 
+  800.0
+
+displayHeightPixels = 
+  600.0
 
 parseGeometry geometry = 
   let 
     pairList = String.split "," (String.dropRight 1 (String.dropLeft 11 geometry))
+  in
+    List.map (\p -> parsePoint p) pairList
+
+parsePolygonGeometry geometry = 
+  let 
+    pairList = String.split "," (String.dropRight 2 (String.dropLeft 9 geometry))
   in
     List.map (\p -> parsePoint p) pairList
 
