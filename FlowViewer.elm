@@ -12,6 +12,7 @@ import Graphics.Element exposing (..)
 import Color exposing (..)
 import GeoUtils exposing (..)
 import Set
+import Text
 
 artccBoundariesUrl = "http://localhost:3008/api/flow_viz/artccBoundaries"
 
@@ -398,16 +399,16 @@ viewFlowLayers model =
         Nothing ->
            viewInputRoutes model
         Just flowSegments ->
-           (viewInputRoutesAndFlowSegments model.displayOriginX model.displayOriginY model.displayWidthNMI model.displayHeightNMI model.selectedAirport model.selectedAirportLocation inputRoutes flowSegments)
+           (viewInputRoutesAndFlowSegments model inputRoutes flowSegments)
 
-viewInputRoutesAndFlowSegments originX originY displayWidth displayHeight selectedAirport selectedAirportLocation inputRoutes flowSegments =
+viewInputRoutesAndFlowSegments model inputRoutes flowSegments =
   let
-    refGeoCoord = getReferencePoint selectedAirportLocation
-    routePaths = List.map (\f -> drawInputRoute f refGeoCoord originX originY displayWidth displayHeight) inputRoutes
-    segmentPaths = List.map (\f -> drawFlowSegment f refGeoCoord originX originY displayWidth displayHeight) flowSegments
+    artccPaths = generateArtccBoundaryPaths model
+    refGeoCoord = getReferencePoint model.selectedAirportLocation
+    routePaths = List.map (\f -> drawInputRoute f refGeoCoord model.displayOriginX model.displayOriginY model.displayWidthNMI model.displayHeightNMI) inputRoutes
+    segmentPaths = List.map (\f -> drawFlowSegment f refGeoCoord model.displayOriginX model.displayOriginY model.displayWidthNMI model.displayHeightNMI) flowSegments
   in
-    [Html.fromElement (collage 800 600 ((drawOrigin selectedAirport originX originY) :: (List.append routePaths segmentPaths)))]
---        List.map (\r -> viewInputRoute r) inputRoutes
+    [Html.fromElement (collage 800 600 ((drawOrigin model.selectedAirport model.displayOriginX model.displayOriginY)  ::  ((List.append artccPaths (List.append routePaths segmentPaths)))))]
     
 
 viewInputRoutes model = 
