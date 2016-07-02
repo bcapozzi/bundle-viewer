@@ -401,15 +401,52 @@ viewFlowLayers model =
         Just flowSegments ->
            (viewInputRoutesAndFlowSegments model inputRoutes flowSegments)
 
+determineFlowSegmentContributorCounts flowSegments = 
+  List.map (\segment -> countContributors segment flowSegments) flowSegments
+
+countContributors segment flowSegments = 
+  let
+    segmentsWithSameID = List.filter (\s -> (s.id == segment.id)) flowSegments
+  in
+    {id = segment.id, count = List.length segmentsWithSameID}
+
 viewInputRoutesAndFlowSegments model inputRoutes flowSegments =
   let
     artccPaths = generateArtccBoundaryPaths model
     refGeoCoord = getReferencePoint model.selectedAirportLocation
     routePaths = List.map (\f -> drawInputRoute f refGeoCoord model.displayOriginX model.displayOriginY model.displayWidthNMI model.displayHeightNMI) inputRoutes
     segmentPaths = List.map (\f -> drawFlowSegment f refGeoCoord model.displayOriginX model.displayOriginY model.displayWidthNMI model.displayHeightNMI) flowSegments
+    midpointCountsByID = constructMidPointsAndCounts flowSegments refGeoCoord model
+    countLabels = List.map (\n -> (move (n.xmid, n.ymid) (toForm (centered (Text.fromString (toString n.contributorCount)))))) midpointCountsByID
   in
-    [Html.fromElement (collage 800 600 ((drawOrigin model.selectedAirport model.displayOriginX model.displayOriginY)  ::  ((List.append artccPaths (List.append routePaths segmentPaths)))))]
+    [Html.fromElement (collage 800 600 (List.append ((drawOrigin model.selectedAirport model.displayOriginX model.displayOriginY)  ::  ((List.append artccPaths (List.append routePaths segmentPaths)))) countLabels))]
+--    [Html.fromElement (collage 800 600 ((drawOrigin model.selectedAirport model.displayOriginX model.displayOriginY)  ::  (List.append countLabels ((List.append artccPaths (List.append routePaths segmentPaths))))))]
+
+constructMidPointsAndCounts flowSegments refGeoCoord model = 
+  List.map (\s -> constructMidPointAndContributorCount s flowSegments refGeoCoord model) flowSegments
+
+constructMidPointAndContributorCount segment flowSegments refCoord model = 
+  let
+    (x,y) = constructMidPointOfFirstSegment segment refCoord model
+    count = countContributors segment flowSegments
+  in
+    {id = segment.id, contributorCount = count.count, xmid = x, ymid = y}
     
+--constructMidPoints flowSegments refGeoCoord model = 
+--  List.map (\s -> constructMidPointOfFirstSegment s refGeoCoord model) flowSegments
+
+constructMidPointOfFirstSegment segment refGeoCoord model =
+  let
+    coords = parsePolygonGeometry segment.geometry
+    originX = model.displayOriginX
+    originY = model.displayOriginY
+    displayWidth = model.displayWidthNMI
+    displayHeight = model.displayHeightNMI
+    coordsXY = List.map (\gc -> toDisplayXY refGeoCoord gc originX originY displayWidth displayHeight) coords
+    (x1,y1) = Maybe.withDefault (0,0) (List.head (List.reverse coordsXY))
+    (x2,y2) = Maybe.withDefault (0,0) (List.head (List.drop 1 (List.reverse coordsXY)))
+  in
+    ((x1+x2)/2, (y1+y2)/2)
 
 viewInputRoutes model = 
   case model.inputRoutes of
